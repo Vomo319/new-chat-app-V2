@@ -17,7 +17,6 @@ app.use(cors());
 app.use(express.json());
 
 const users = new Map();
-const rooms = new Set(['general', 'random', 'tech']);
 
 app.get('/', (req, res) => {
   res.send('Server is running!');
@@ -27,44 +26,39 @@ io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('login', (username) => {
-    users.set(socket.id, { username, currentRoom: null });
-    io.emit('user_list', Array.from(users.values()).map(u => u.username));
+    users.set(socket.id, { username, socketId: socket.id });
+    io.emit('user_list', Array.from(users.values()));
     console.log(`User ${username} logged in`);
   });
 
-  socket.on('join_room', (room) => {
+  socket.on('send_message', ({ recipientId, message }) => {
+    const sender = users.get(socket.id);
+    const recipient = Array.from(users.values()).find(user => user.socketId === recipientId);
+    if (sender && recipient) {
+      const fullMessage = { 
+        ...message, 
+        sender: sender.username, 
+        recipient: recipient.username,
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        readBy: [sender.username]
+      };
+      io.to(recipientId).to(socket.id).emit('new_message', fullMessage);
+      console.log(`Message sent from ${sender.username} to ${recipient.username}: ${JSON.stringify(fullMessage)}`);
+    }
+  });
+
+  socket.on('typing', ({ recipientId, isTyping }) => {
     const user = users.get(socket.id);
     if (user) {
-      if (user.currentRoom) {
-        socket.leave(user.currentRoom);
-      }
-      socket.join(room);
-      user.currentRoom = room;
-      io.to(room).emit('user_joined', { username: user.username, room });
-      console.log(`User ${user.username} joined room ${room}`);
+      socket.to(recipientId).emit('user_typing', { username: user.username, isTyping });
     }
   });
 
-  socket.on('send_message', (message) => {
+  socket.on('read_receipt', ({ messageId, senderId }) => {
     const user = users.get(socket.id);
-    if (user && user.currentRoom) {
-      const fullMessage = { ...message, sender: user.username, room: user.currentRoom };
-      io.to(user.currentRoom).emit('new_message', fullMessage);
-      console.log(`Message sent in ${user.currentRoom}: ${JSON.stringify(fullMessage)}`);
-    }
-  });
-
-  socket.on('typing', (isTyping) => {
-    const user = users.get(socket.id);
-    if (user && user.currentRoom) {
-      socket.to(user.currentRoom).emit('user_typing', { username: user.username, isTyping });
-    }
-  });
-
-  socket.on('read_receipt', (messageId) => {
-    const user = users.get(socket.id);
-    if (user && user.currentRoom) {
-      io.to(user.currentRoom).emit('message_read', { messageId, username: user.username });
+    if (user) {
+      io.to(senderId).emit('message_read', { messageId, username: user.username });
     }
   });
 
@@ -72,10 +66,7 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (user) {
       users.delete(socket.id);
-      io.emit('user_list', Array.from(users.values()).map(u => u.username));
-      if (user.currentRoom) {
-        io.to(user.currentRoom).emit('user_left', { username: user.username, room: user.currentRoom });
-      }
+      io.emit('user_list', Array.from(users.values()));
     }
     console.log('User disconnected:', socket.id);
   });
